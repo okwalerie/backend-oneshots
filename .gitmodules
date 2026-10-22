@@ -1,0 +1,3 @@
+[submodule "constraint-decay"]
+	path = constraint-decay
+	url = https://github.com/francdente/constraint-decay

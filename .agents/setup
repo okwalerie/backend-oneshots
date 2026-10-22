@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb to run the Constraint Decay benchmark (constraint-decay/ submodule):
+# Docker + Compose, the harness's Python env, and pre-built benchmark images.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+harness="$repo_root/constraint-decay"
+log_dir="$HOME/.cache/amp/logs"
+mkdir -p "$log_dir"
+exec > >(tee -a "$log_dir/setup.log") 2>&1
+
+step() {
+  local name="$1"
+  shift
+  printf '\n==> %s\n' "$name"
+  local start=$SECONDS
+  "$@"
+  printf '<== %s (%ss)\n' "$name" "$((SECONDS - start))"
+}
+
+as_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
+}
+
+install_system_packages() {
+  local packages=() package
+  for package in docker-ce docker-ce-cli containerd.io docker-compose-plugin git jq; do
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
+      || packages+=("$package")
+  done
+  if [ "${#packages[@]}" -eq 0 ]; then
+    echo 'System packages already installed.'
+    return
+  fi
+  as_root apt-get update
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+}
+
+configure_docker() {
+  # The agent process does not carry the docker group, so open the socket. Orbs are single-user sandboxes.
+  local dropin=/etc/systemd/system/docker.socket.d/amp-orb.conf
+  local want=$'[Socket]\nSocketMode=0666'
+  if [ "$(cat "$dropin" 2>/dev/null)" != "$want" ]; then
+    as_root mkdir -p "$(dirname "$dropin")"
+    printf '%s\n' "$want" | as_root tee "$dropin" >/dev/null
+    as_root systemctl daemon-reload
+    as_root systemctl stop docker.service docker.socket 2>/dev/null || true
+  fi
+  as_root systemctl enable --quiet containerd.service docker.socket docker.service
+  as_root systemctl start docker.socket docker.service
+  docker info --format 'Docker {{.ServerVersion}} ({{.Driver}})'
+  docker compose version
+}
+
+sync_harness() {
+  git -C "$repo_root" submodule update --init --recursive
+  # uv fetches the pinned Python (.python-version = 3.12) and installs from uv.lock.
+  (cd "$harness" && uv sync --frozen)
+  if [ ! -f "$harness/.env" ]; then
+    cat > "$harness/.env" <<EOF
+# Paths are orb-local. Provide LLM_API_KEY, LLM_MODEL and optional LLM_BASE_URL as Amp
+# secrets or environment variables; python-dotenv never overrides variables already set.
+TASKS_ABSOLUTE_PATH="$harness/data/tasks"
+RESULTS_ABSOLUTE_PATH="$harness/data/results"
+EOF
+  fi
+  mkdir -p "$harness/data/results"
+}
+
+build_images() {
+  # Generation tasks (uv/node runtimes) and the Newman evaluator. Per-framework feature-task
+  # images build on first use. Docker's layer cache makes warm runs near-instant.
+  local runtime
+  docker pull --quiet postgres:16
+  for runtime in uv node; do
+    (cd "$harness/runtime/$runtime" && docker compose build --quiet conduit newman)
+  done
+  docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep -E '^(apibench/|postgres:16)'
+}
+
+stop_docker() {
+  # Flush daemon state cleanly before the snapshot. .agents/resume starts Docker again.
+  as_root systemctl stop docker.service docker.socket containerd.service
+}
+
+step 'System packages' install_system_packages
+step 'Docker daemon' configure_docker
+step 'Harness Python env' sync_harness
+step 'Benchmark images' build_images
+step 'Stop Docker for snapshot' stop_docker

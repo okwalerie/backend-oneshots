@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fast health check on activation and wake: make sure the Docker daemon is up.
+set -euo pipefail
+
+if ! docker info >/dev/null 2>&1; then
+  sudo -n systemctl start docker.socket docker.service
+fi
+docker info --format 'Docker {{.ServerVersion}} ready'
