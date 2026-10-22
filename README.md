@@ -5,7 +5,9 @@ conventional backend generation, reproducing
 [Constraint Decay: The Fragility of LLM Agents in Backend Code Generation](https://arxiv.org/abs/2605.06445).
 
 `constraint-decay/` is the paper's reproducibility package
-([francdente/constraint-decay](https://github.com/francdente/constraint-decay)), pinned as a submodule.
+([okwalerie/constraint-decay](https://github.com/okwalerie/constraint-decay), a fork of
+[francdente/constraint-decay](https://github.com/francdente/constraint-decay)), pinned as a submodule tracking `main`.
+Update it with `git submodule update --remote constraint-decay`.
 
 ## Orbs
 
